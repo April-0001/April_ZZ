@@ -13,6 +13,142 @@ plt.rcParams['font.sans-serif']=['SimHei']
 plt.rcParams['axes.unicode_minus']=False
 
 #导入数据并设置索引
-data = pd.read_csv("E:\研究生课程论文\Time Series Analysis\WaterLevel.csv")
+data = pd.read_csv("WaterLevel.csv")
 data = data.set_index('Month')
+#预览观察数据的前10行
 data.head(10)
+
+#绘制原序列的时序图
+data_1 = data['Highest_Water_Level']
+data_1.plot(figsize=(30,15))
+font = {'size':40}
+plt.title('')
+plt.tick_params(labelsize=30)
+plt.xlabel('')
+plt.ylabel('')
+
+#绘制原序列的自相关图
+plt.style.use({'figure.figsize':(20,10)})
+sm.graphics.tsa.plot_acf(data_1,lags=50)
+plt.tick_params(labelsize=25)
+plt.title('')
+
+#绘制原序列的偏自相关图
+plt.style.use({'figure.figsize':(20,10)})
+sm.graphics.tsa.plot_pacf(data['Highest_Water_Level'],lags=30)
+plt.tick_params(labelsize=25)
+plt.title('')
+
+#自定义ADF检验函数
+def TestStationaryAdfuller(ts, cutoff = 0.01):
+    ts_test = adfuller(ts, autolag = 'AIC')
+    ts_test_output = pd.Series(ts_test[0:4], index=['Test Statistic','p-value','#Lags Used','Number of Observations Used'])
+
+    for key,value in ts_test[4].items():
+        ts_test_output['Critical Value (%s)'%key] = value
+    print(ts_test_output)
+
+    if ts_test[1] <= cutoff:
+        print(u"拒绝原假设，即数据没有单位根,序列是平稳的。")
+    else:
+        print(u"不能拒绝原假设，即数据存在单位根,数据是非平稳序列。")
+
+#对原序列进行平稳性检验
+TestStationaryAdfuller(data['Highest_Water_Level'])
+
+#原序列不平稳，进行平稳化处理
+data_first_difference = data['Highest_Water_Level'] - data['Highest_Water_Level'].diff(1)
+data_seasonal_first_difference = data_first_difference - data_first_difference.shift(12)
+data_new = data_seasonal_first_difference.dropna(inplace=False)
+#绘制平稳化处理后的序列时序图
+plt.style.use({'figure.figsize':(20,10)})
+plt.tick_params(labelsize=20)
+data_new.plot()
+plt.xlabel(' ')
+plt.ylabel(' ')
+
+#对平稳化处理后的序列进行平稳性检验
+TestStationaryAdfuller(data_new)
+
+#绘制平稳化序列的自相关图
+plt.style.use({'figure.figsize':(20,10)})
+sm.graphics.tsa.plot_acf(data_new, lags=50)
+plt.title('')
+plt.tick_params(labelsize=20)
+
+#绘制平稳化序列的偏自相关图
+sm.graphics.tsa.plot_pacf(data_new, lags=30)
+plt.title('')
+plt.style.use({'figure.figsize':(20,10)})
+plt.tick_params(labelsize=20)
+
+#进行白噪声检验
+import numpy as np
+r,q,p = sm.tsa.acf(data_new.values.squeeze(), qstat=True) 
+data = np.c_[range(1,41), r[1:], q, p]
+table = pd.DataFrame(data, columns=['lag', "AC", "Q", "Prob(>Q)"]) 
+print(table.set_index('lag'))
+
+#模型定阶
+p = d = q = range(0, 2) 
+pdq = list(itertools.product(p, d, q)) 
+pdq_x_PDQs = [(x[0], x[1], x[2], 12) for x in list(itertools.product(p, d, q))] 
+a=[]
+b=[]
+c=[]
+wf=pd.DataFrame()
+for param in pdq:
+    for seasonal_param in pdq_x_PDQs:
+        try:
+            mod = sm.tsa.statespace.SARIMAX(data_1,order=param,seasonal_order=seasonal_param,enforce_stationarity=False,enforce_invertibility=False)
+            results = mod.fit()
+            print('ARIMA{}x{} - AIC:{}'.format(param, seasonal_param, results.aic))
+            a.append(param)
+            b.append(seasonal_param)
+            c.append(results.aic)
+        except:
+            continue
+wf['pdq']=a
+wf['pdq_x_PDQs']=b
+wf['aic']=c
+print(wf[wf['aic']==wf['aic'].min()])
+
+#模型拟合
+mod = sm.tsa.statespace.SARIMAX(data_1, 
+                                order=(1,1,1), 
+                                seasonal_order=(0,1,1,12),   
+                                enforce_stationarity=False,
+                                enforce_invertibility=False)
+results = mod.fit()
+print(results.summary())
+
+#残差检验
+results.plot_diagnostics(figsize=(25, 15))
+plt.show()
+#LB检验
+r,q,p = sm.tsa.acf(results.resid.values.squeeze(), qstat=True) 
+data = np.c_[range(1,41), r[1:], q, p] 
+table = pd.DataFrame(data, columns=['lag', "AC", "Q", "Prob(>Q)"]) 
+print(table.set_index('lag'))
+
+#模型预测效果检验
+pred = results.get_prediction(start = 154, dynamic=False)
+data_forecast = pred.predicted_mean
+data_truth = data_1['2020年1月':]
+data_pred_concat = pd.concat([data_truth, data_forecast],axis=1)
+data_pred_concat.columns = [u'原始值',u'预测值']
+
+#使用MSE和RMSE作为量化评估指标
+mse = ((data_forecast - data_truth) ** 2).mean()
+print(u'预测值的均方误差(MSE)是{}'.format(round(mse, 2)))
+print('预测值的均方根误差(RMSE)是: {:.4f}'.format(np.sqrt(sum((data_forecast-data_truth)**2)/len(data_forecast))))
+data_pred_concat.head(21)
+
+#预测未来10年的数据
+forecast = results.get_forecast(27)
+#得到预测的置信区间
+forecast_ci = forecast.conf_int()
+data_forecast = forecast.predicted_mean
+data_pred_concat = pd.concat([data_forecast,forecast_ci],axis=1)
+data_pred_concat.columns = [u'预测值',u'下限',u'上限']
+data_pred_concat.head(27)
